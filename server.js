@@ -39,7 +39,7 @@ app.post('/twiml', (req, res) => {
 
   response.say("Hi! This is Kate from Vivid Smart. How may I help you today?");
   response.start().stream({
-    url: 'wss://ai-receptionist-kate.herokuapp.com' // Replace with your app name
+    url: 'wss://ai-receptionist-kate-7fb462c595f0.herokuapp.com/' // Replace with your app name
   });
 
   res.type('text/xml');
