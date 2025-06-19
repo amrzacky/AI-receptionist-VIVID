@@ -1,26 +1,31 @@
-// Catch any crash errors
+// Catch and show any crash errors
 process.on('uncaughtException', function (err) {
   console.error('UNCAUGHT EXCEPTION:', err.stack);
 });
 
-// Import required libraries
+// Import libraries
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const { Deepgram } = require('@deepgram/sdk');
 const { Readable } = require('stream');
+const { OpenAI } = require('openai');
 const twilio = require('twilio');
-const OpenAI = require('openai');
-require('dotenv').config();
+const axios = require('axios');
 
-// Init Deepgram + OpenAI
+// Setup APIs
 const deepgram = new Deepgram(process.env.DEEPGRAM_API_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Setup Express + WebSocket
+// Create Express app and server
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
+
+// For parsing JSON and urlencoded requests
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // WebSocket audio handling
 wss.on('connection', ws => {
@@ -30,58 +35,69 @@ wss.on('connection', ws => {
     read() {}
   });
 
-  const dgConnection = deepgram.transcription.live({
+  const dgStream = deepgram.transcription.live({
     punctuate: true,
     interim_results: false
   });
 
-  dgConnection.on('transcriptReceived', async data => {
+  dgStream.on('transcriptReceived', async data => {
     const transcript = JSON.parse(data);
     const text = transcript.channel?.alternatives[0]?.transcript;
+
     if (text && text.length > 0) {
       console.log('📝 Heard:', text);
 
-      // Optional: Get OpenAI response (future step)
-      // const aiResponse = await openai.chat.completions.create({
-      //   model: 'gpt-4',
-      //   messages: [{ role: 'user', content: text }]
-      // });
-      // console.log('🤖 AI:', aiResponse.choices[0].message.content);
+      // Send to OpenAI
+      const aiReply = await openai.chat.completions.create({
+        model: "gpt-3.5-turbo",
+        messages: [
+          { role: "system", content: "You're Kate, a friendly AI receptionist for a tech support company." },
+          { role: "user", content: text }
+        ]
+      });
+
+      const replyText = aiReply.choices[0].message.content;
+      console.log('🤖 AI says:', replyText);
+
+      // Send data to Make.com
+      await axios.post(process.env.MAKE_WEBHOOK_URL, {
+        question: text,
+        answer: replyText
+      });
     }
   });
 
-  dgConnection.on('error', err => {
+  dgStream.on('error', err => {
     console.error('❌ Deepgram error:', err);
   });
 
-  audioStream.pipe(dgConnection);
+  audioStream.pipe(dgStream);
 
-  ws.on('message', msg => {
-    audioStream.push(msg);
+  ws.on('message', message => {
+    audioStream.push(message);
   });
 
   ws.on('close', () => {
     console.log('❌ WebSocket client disconnected');
-    dgConnection.finish();
+    dgStream.finish();
   });
 });
 
-// Home test endpoint
-app.get('/', (req, res) => {
-  res.send('🎉 AI Receptionist is running!');
-});
-
-// TwiML endpoint
+// Twilio greeting + streaming
 app.post('/twiml', (req, res) => {
-  const twiml = new twilio.twiml.VoiceResponse();
-
-  twiml.say("Hi! This is Kate from Vivid Smart. How may I help you today?");
-  twiml.start().stream({
+  const response = new twilio.twiml.VoiceResponse();
+  response.say("Hi! This is Kate from Vivid Smart. How may I help you today?");
+  response.start().stream({
     url: `wss://${req.headers.host}/`
   });
 
   res.type('text/xml');
-  res.send(twiml.toString());
+  res.send(response.toString());
+});
+
+// Home page test
+app.get('/', (req, res) => {
+  res.send('🎉 AI Receptionist is running!');
 });
 
 // Start server
