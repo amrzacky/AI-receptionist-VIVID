@@ -1,4 +1,5 @@
-// Catch and show any crash errors
+
+  // Catch and show any crash errors
 process.on('uncaughtException', function (err) {
   console.error('UNCAUGHT EXCEPTION:', err.stack);
 });
@@ -10,9 +11,10 @@ const WebSocket = require('ws');
 const { Deepgram } = require('@deepgram/sdk');
 const { Readable } = require('stream');
 const twilio = require('twilio');
+const axios = require('axios');
 require('dotenv').config();
 
-// Setup Deepgram
+// Setup Deepgram with v3 format
 const deepgram = new Deepgram(process.env.DEEPGRAM_API_KEY);
 
 // Create Express app and HTTP server
@@ -26,7 +28,8 @@ wss.on('connection', ws => {
 
   const audioStream = new Readable({ read() {} });
 
-  const deepgramLive = deepgram.transcription.live({
+  const deepgramLive = deepgram.listen.live({
+    model: 'nova',
     punctuate: true,
     interim_results: false
   });
@@ -36,6 +39,7 @@ wss.on('connection', ws => {
     const text = transcript.channel?.alternatives[0]?.transcript;
     if (text && text.length > 0) {
       console.log('📝 Heard:', text);
+      // You can send this to OpenAI + ElevenLabs next
     }
   });
 
@@ -60,7 +64,7 @@ app.get('/', (req, res) => {
   res.send('🎉 AI Receptionist is running!');
 });
 
-// Twilio Voice stream
+// Twilio voice response
 app.post('/twiml', (req, res) => {
   const response = new twilio.twiml.VoiceResponse();
 
@@ -73,7 +77,7 @@ app.post('/twiml', (req, res) => {
   res.send(response.toString());
 });
 
-// Start server
+// Start the server
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
