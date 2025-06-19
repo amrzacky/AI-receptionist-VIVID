@@ -1,73 +1,56 @@
-// Catch and show crash errors
-process.on('uncaughtException', function (err) {
-  console.error('UNCAUGHT EXCEPTION:', err.stack);
-});
-
-// Load environment variables
 require('dotenv').config();
-
-// Import libraries
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
-const { Deepgram } = require('@deepgram/sdk');
 const { Readable } = require('stream');
+const { createClient } = require('@deepgram/sdk');
 const twilio = require('twilio');
 
-// Setup Deepgram
-const deepgram = new Deepgram(process.env.DEEPGRAM_API_KEY);
-
-// Create Express app and HTTP server
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// WebSocket audio processing
+const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
+
 wss.on('connection', ws => {
   console.log('✅ WebSocket connected');
 
-  const audioStream = new Readable({
-    read() {}
-  });
+  const audioStream = new Readable({ read() {} });
 
-  const dgConnection = deepgram.listen.live({
-    model: 'general',
-    language: 'en-US',
-    smart_format: true,
-    interim_results: false
-  });
+  deepgram.listen.live({ model: 'nova', language: 'en' })
+    .then(deepgramLive => {
+      audioStream.pipe(deepgramLive);
 
-  dgConnection.addListener('transcriptReceived', (data) => {
-    const transcript = JSON.parse(data);
-    const text = transcript.channel?.alternatives[0]?.transcript;
-    if (text && text.length > 0) {
-      console.log('📝 Heard:', text);
-      // 🚧 Later: Send to OpenAI + ElevenLabs here
-    }
-  });
+      deepgramLive.on('transcriptReceived', data => {
+        const transcript = data.channel?.alternatives[0]?.transcript;
+        if (transcript && transcript.length > 0) {
+          console.log("📝 Heard:", transcript);
+          // 🔜 You can call OpenAI and ElevenLabs here later
+        }
+      });
 
-  dgConnection.addListener('error', err => {
-    console.error('❌ Deepgram error:', err);
-  });
+      deepgramLive.on('error', err => {
+        console.error('❌ Deepgram error:', err);
+      });
 
-  audioStream.pipe(dgConnection);
+      ws.on('message', msg => {
+        audioStream.push(msg);
+      });
 
-  ws.on('message', message => {
-    audioStream.push(message);
-  });
-
-  ws.on('close', () => {
-    console.log('❌ WebSocket client disconnected');
-    dgConnection.finish();
-  });
+      ws.on('close', () => {
+        console.log('❌ WebSocket client disconnected');
+        deepgramLive.finish();
+      });
+    })
+    .catch(err => {
+      console.error('❌ Failed to connect to Deepgram:', err);
+    });
 });
 
-// Test home page
 app.get('/', (req, res) => {
   res.send('🎉 AI Receptionist is running!');
 });
 
-// Twilio voice response
 app.post('/twiml', (req, res) => {
   const response = new twilio.twiml.VoiceResponse();
 
@@ -80,9 +63,7 @@ app.post('/twiml', (req, res) => {
   res.send(response.toString());
 });
 
-// Start the server
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
