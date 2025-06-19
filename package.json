@@ -6,12 +6,11 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@deepgram/sdk": "^4.6.0",
-    "axios": "^1.6.8",
+    "@deepgram/sdk": "^3.2.1",
     "dotenv": "^16.0.3",
     "express": "^4.18.2",
-    "openai": "^4.30.0",
-    "twilio": "^4.14.0",
+    "openai": "^4.20.0",
+    "twilio": "^4.15.0",
     "ws": "^8.13.0"
   }
 }
