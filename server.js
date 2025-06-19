@@ -1,56 +1,83 @@
-require('dotenv').config();
+// Catch and show crash errors
+process.on('uncaughtException', function (err) {
+  console.error('UNCAUGHT EXCEPTION:', err.stack);
+});
+
+// Import libraries
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
+const { Deepgram } = require('@deepgram/sdk');
 const { Readable } = require('stream');
-const { createClient } = require('@deepgram/sdk');
+const { OpenAI } = require('openai');
 const twilio = require('twilio');
+require('dotenv').config();
 
+// Setup Deepgram and OpenAI
+const deepgram = new Deepgram(process.env.DEEPGRAM_API_KEY);
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// Create server and app
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
+app.use(express.urlencoded({ extended: true }));
 
-const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
-
+// WebSocket audio processing
 wss.on('connection', ws => {
   console.log('✅ WebSocket connected');
 
   const audioStream = new Readable({ read() {} });
 
-  deepgram.listen.live({ model: 'nova', language: 'en' })
-    .then(deepgramLive => {
-      audioStream.pipe(deepgramLive);
+  const deepgramLive = deepgram.transcription.live({
+    punctuate: true,
+    interim_results: false,
+  });
 
-      deepgramLive.on('transcriptReceived', data => {
-        const transcript = data.channel?.alternatives[0]?.transcript;
-        if (transcript && transcript.length > 0) {
-          console.log("📝 Heard:", transcript);
-          // 🔜 You can call OpenAI and ElevenLabs here later
-        }
+  deepgramLive.on('transcriptReceived', async data => {
+    const transcript = JSON.parse(data);
+    const text = transcript.channel?.alternatives[0]?.transcript;
+    if (text && text.length > 0) {
+      console.log('📝 Customer said:', text);
+
+      // Send to OpenAI
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: 'You are Kate, a helpful AI receptionist for an IT support company named Vivid Smart. Answer naturally and professionally.' },
+          { role: 'user', content: text }
+        ]
       });
 
-      deepgramLive.on('error', err => {
-        console.error('❌ Deepgram error:', err);
-      });
+      const reply = completion.choices[0].message.content;
+      console.log('🤖 AI replied:', reply);
 
-      ws.on('message', msg => {
-        audioStream.push(msg);
-      });
+      // 🚧 You can add ElevenLabs TTS and Twilio response here later
+    }
+  });
 
-      ws.on('close', () => {
-        console.log('❌ WebSocket client disconnected');
-        deepgramLive.finish();
-      });
-    })
-    .catch(err => {
-      console.error('❌ Failed to connect to Deepgram:', err);
-    });
+  deepgramLive.on('error', err => {
+    console.error('❌ Deepgram error:', err);
+  });
+
+  audioStream.pipe(deepgramLive);
+
+  ws.on('message', message => {
+    audioStream.push(message);
+  });
+
+  ws.on('close', () => {
+    console.log('❌ WebSocket disconnected');
+    deepgramLive.finish();
+  });
 });
 
+// Test route
 app.get('/', (req, res) => {
   res.send('🎉 AI Receptionist is running!');
 });
 
+// Twilio Voice Webhook
 app.post('/twiml', (req, res) => {
   const response = new twilio.twiml.VoiceResponse();
 
@@ -58,11 +85,13 @@ app.post('/twiml', (req, res) => {
   response.start().stream({
     url: `wss://${req.headers.host}/`
   });
+  response.pause({ length: 60 }); // ⏸️ Keeps call alive for 60s
 
   res.type('text/xml');
   res.send(response.toString());
 });
 
+// Start server
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
