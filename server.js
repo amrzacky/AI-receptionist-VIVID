@@ -1,55 +1,114 @@
-require('dotenv').config();
 const express = require('express');
-const http = require('http');
-const WebSocket = require('ws');
 const { Deepgram } = require('@deepgram/sdk');
-const { OpenAI } = require('openai');
-const axios = require('axios');
+const { Twilio } = require('twilio');
+const bodyParser = require('body-parser');
 const { Readable } = require('stream');
-const { twiml: { VoiceResponse } } = require('twilio');
+const axios = require('axios');
+const WebSocket = require('ws');
+require('dotenv').config();
 
 const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const PORT = process.env.PORT || 3000;
 
-const PORT = process.env.PORT || 8080;
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
 
-// Initialize APIs
-const deepgram = new Deepgram({ apiKey: process.env.DEEPGRAM_API_KEY });
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const deepgram = new Deepgram(process.env.DEEPGRAM_API_KEY);
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 
-// Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.post('/twiml', (req, res) => {
+  const response = `
+    <Response>
+      <Start>
+        <Stream url="wss://${req.headers.host}/media"/>
+      </Start>
+      <Say voice="Polly.Joanna">Hello, this is Kate from Zyvai Tech. How may I help you today?</Say>
+    </Response>
+  `;
+  res.set('Content-Type', 'text/xml');
+  res.send(response);
+});
 
-// 🧠 WebSocket Handler
-wss.on('connection', (ws) => {
-  console.log('✅ WebSocket connected');
-  
-  const stream = new Readable({ read() {} });
+app.ws('/media', (ws, req) => {
+  let deepgramSocket;
 
-  const dgStream = deepgram.listen.live({
-    model: 'nova',
-    language: 'en-US',
-    smart_format: true,
-    interim_results: false,
-  });
+  ws.on('message', async (msg) => {
+    const message = JSON.parse(msg);
 
-  stream.pipe(dgStream);
-
-  dgStream.on('transcriptReceived', async (data) => {
-    const transcript = data.channel.alternatives[0]?.transcript;
-    if (transcript && transcript.length > 0) {
-      console.log('📝 Transcript:', transcript);
-
-      // AI Response
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        messages: [
-          { role: 'system', content: 'You are Kate, a friendly receptionist for an IT company.' },
-          { role: 'user', content: transcript }
-        ],
+    if (message.event === 'start') {
+      const { stream } = await deepgram.listen.live({
+        model: 'nova',
+        punctuate: true,
+        language: 'en-US',
+        interim_results: false,
       });
 
-      const aiResponse = completion.choices[0].message.content;
-      console.log('🤖 AI:', aiResp
+      deepgramSocket = stream;
+
+      deepgramSocket.on('transcriptReceived', async (data) => {
+        const transcript = data.channel.alternatives[0].transcript;
+        if (transcript) {
+          console.log('🎤 Caller:', transcript);
+
+          // Send to OpenAI for understanding
+          const aiResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
+            model: 'gpt-4',
+            messages: [
+              { role: 'system', content: 'You are a helpful AI receptionist for an IT support and toner sales company.' },
+              { role: 'user', content: transcript }
+            ]
+          }, {
+            headers: { Authorization: `Bearer ${OPENAI_API_KEY}` }
+          });
+
+          const aiText = aiResponse.data.choices[0].message.content;
+          console.log('🤖 AI:', aiText);
+
+          // Send AI response to ElevenLabs to generate audio
+          const elevenResponse = await axios.post('https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL/stream', {
+            text: aiText,
+            model_id: "eleven_monolingual_v1",
+            voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+          }, {
+            headers: {
+              'xi-api-key': ELEVENLABS_API_KEY,
+              'Content-Type': 'application/json'
+            },
+            responseType: 'arraybuffer'
+          });
+
+          // Send to Make.com webhook (optional)
+          await axios.post(MAKE_WEBHOOK_URL, {
+            question: transcript,
+            response: aiText
+          });
+
+          // TODO: Play audio back via Twilio Media Streams (future step)
+        }
+      });
+
+      deepgramSocket.on('error', console.error);
+      deepgramSocket.on('close', () => console.log('Deepgram closed.'));
+    }
+
+    if (message.event === 'media' && deepgramSocket) {
+      const audioData = Buffer.from(message.media.payload, 'base64');
+      deepgramSocket.send(audioData);
+    }
+
+    if (message.event === 'stop' && deepgramSocket) {
+      deepgramSocket.finish();
+    }
+  });
+
+  ws.on('close', () => {
+    if (deepgramSocket) deepgramSocket.finish();
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
+
