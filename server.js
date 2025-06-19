@@ -12,15 +12,15 @@ const { Readable } = require('stream');
 const twilio = require('twilio');
 require('dotenv').config();
 
-// Setup Deepgram
-const deepgram = new Deepgram(process.env.5e1194940f1574ca191f07c65c7cc5ae294f59f9 );
+// Setup Deepgram using API key from .env
+const deepgram = new Deepgram(process.env.DEEPGRAM_API_KEY);
 
 // Create Express app and HTTP server
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// WebSocket audio processing
+// WebSocket audio handling
 wss.on('connection', ws => {
   console.log('✅ WebSocket connected');
 
@@ -38,7 +38,7 @@ wss.on('connection', ws => {
     const text = transcript.channel?.alternatives[0]?.transcript;
     if (text && text.length > 0) {
       console.log('📝 Heard:', text);
-      // 🚧 Later you'll send this to OpenAI here
+      // 🔜 Later you'll send this to OpenAI
     }
   });
 
@@ -80,4 +80,6 @@ app.post('/twiml', (req, res) => {
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+});
+
 });
