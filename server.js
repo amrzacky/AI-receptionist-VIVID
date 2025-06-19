@@ -3,16 +3,18 @@ process.on('uncaughtException', function (err) {
   console.error('UNCAUGHT EXCEPTION:', err.stack);
 });
 
+// Load environment variables
+require('dotenv').config();
+
 // Import libraries
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
-const { Readable } = require('stream');
 const { Deepgram } = require('@deepgram/sdk');
+const { Readable } = require('stream');
 const twilio = require('twilio');
-require('dotenv').config();
 
-// Setup Deepgram with API Key from .env
+// Setup Deepgram
 const deepgram = new Deepgram(process.env.DEEPGRAM_API_KEY);
 
 // Create Express app and HTTP server
@@ -20,11 +22,7 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Parse incoming JSON and URL-encoded data (optional but good practice)
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// WebSocket logic for streaming audio to Deepgram
+// WebSocket audio processing
 wss.on('connection', ws => {
   console.log('✅ WebSocket connected');
 
@@ -32,26 +30,27 @@ wss.on('connection', ws => {
     read() {}
   });
 
-  const dgLive = deepgram.transcription.live({
-    punctuate: true,
+  const dgConnection = deepgram.listen.live({
+    model: 'general',
+    language: 'en-US',
+    smart_format: true,
     interim_results: false
   });
 
-  dgLive.on('transcriptReceived', data => {
+  dgConnection.addListener('transcriptReceived', (data) => {
     const transcript = JSON.parse(data);
     const text = transcript.channel?.alternatives[0]?.transcript;
     if (text && text.length > 0) {
       console.log('📝 Heard:', text);
-
-      // 🚧 NEXT STEP: Send `text` to OpenAI here and respond via ElevenLabs
+      // 🚧 Later: Send to OpenAI + ElevenLabs here
     }
   });
 
-  dgLive.on('error', err => {
+  dgConnection.addListener('error', err => {
     console.error('❌ Deepgram error:', err);
   });
 
-  audioStream.pipe(dgLive);
+  audioStream.pipe(dgConnection);
 
   ws.on('message', message => {
     audioStream.push(message);
@@ -59,7 +58,7 @@ wss.on('connection', ws => {
 
   ws.on('close', () => {
     console.log('❌ WebSocket client disconnected');
-    dgLive.finish();
+    dgConnection.finish();
   });
 });
 
@@ -68,7 +67,7 @@ app.get('/', (req, res) => {
   res.send('🎉 AI Receptionist is running!');
 });
 
-// Twilio will request this endpoint
+// Twilio voice response
 app.post('/twiml', (req, res) => {
   const response = new twilio.twiml.VoiceResponse();
 
@@ -81,8 +80,9 @@ app.post('/twiml', (req, res) => {
   res.send(response.toString());
 });
 
-// Start server on correct port
+// Start the server
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
