@@ -1,13 +1,9 @@
 {
   "name": "ai-receptionist",
   "version": "1.0.0",
-  "description": "AI Receptionist using Twilio, Deepgram, OpenAI, and Make",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=18.0.0"
   },
   "dependencies": {
     "@deepgram/sdk": "^3.1.0",
