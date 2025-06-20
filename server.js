@@ -4,7 +4,6 @@ const expressWs = require('express-ws');
 const { Deepgram } = require('@deepgram/sdk');
 const axios = require('axios');
 const { OpenAI } = require('openai');
-const { Twilio } = require('twilio');
 const { Readable } = require('stream');
 
 const app = express();
@@ -32,32 +31,10 @@ app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
   res.send(response);
 });
 
-app.ws('/media', (ws, req) => {
+app.ws('/media', async (ws, req) => {
   console.log('🔊 WebSocket connected');
 
-  let dgConnection;
-
-  const handleTranscript = async (text) => {
-    console.log('📝 Transcription:', text);
-
-    const aiResp = await openai.chat.completions.create({
-      model: 'gpt-4',
-      messages: [
-        { role: 'system', content: 'You are a friendly IT support receptionist. Greet and ask helpful follow-up questions.' },
-        { role: 'user', content: text }
-      ],
-    });
-
-    const reply = aiResp.choices[0].message.content;
-    console.log('🤖 AI:', reply);
-
-    await axios.post(process.env.MAKE_WEBHOOK_URL, {
-      message: reply,
-      original: text
-    });
-  };
-
-  const stream = deepgram.listen.live({
+  const deepgramLive = await deepgram.listen.live({
     model: 'nova-2',
     language: 'en-US',
     interim_results: false,
@@ -65,31 +42,50 @@ app.ws('/media', (ws, req) => {
     vad_events: true
   });
 
-  stream.on('transcriptReceived', (msg) => {
+  deepgramLive.on('transcriptReceived', async (msg) => {
     const transcript = msg.channel.alternatives[0]?.transcript;
     if (transcript) {
-      handleTranscript(transcript);
+      console.log('📝 Transcription:', transcript);
+
+      const aiResp = await openai.chat.completions.create({
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: 'You are a friendly IT support receptionist. Greet and ask helpful follow-up questions.' },
+          { role: 'user', content: transcript }
+        ],
+      });
+
+      const reply = aiResp.choices[0].message.content;
+      console.log('🤖 AI:', reply);
+
+      await axios.post(process.env.MAKE_WEBHOOK_URL, {
+        message: reply,
+        original: transcript
+      });
     }
   });
 
-  stream.on('error', console.error);
+  deepgramLive.on('error', console.error);
 
-  ws.on('message', (data) => {
+  ws.on('message', async (data) => {
     const msg = JSON.parse(data);
 
     if (msg.event === 'media') {
       const audio = Buffer.from(msg.media.payload, 'base64');
-      stream.send(audio);
-    } else if (msg.event === 'stop') {
+      const audioStream = Readable.from(audio);
+      audioStream.pipe(deepgramLive);
+    }
+
+    if (msg.event === 'stop') {
       console.log('🛑 Call ended');
-      stream.finish();
+      deepgramLive.finish();
       ws.close();
     }
   });
 
   ws.on('close', () => {
     console.log('🔌 WebSocket disconnected');
-    stream.finish();
+    deepgramLive.finish();
   });
 });
 
