@@ -1,24 +1,22 @@
 require('dotenv').config();
 const express = require('express');
 const expressWs = require('express-ws');
-const { Deepgram } = require('@deepgram/sdk');
+const { createClient } = require('@deepgram/sdk'); // v3 format
 const axios = require('axios');
 const { OpenAI } = require('openai');
-const { Readable } = require('stream');
 
 const app = express();
 expressWs(app);
 
 const port = process.env.PORT || 8080;
-
-const deepgram = new Deepgram(process.env.DEEPGRAM_API_KEY);
+const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 app.get('/', (req, res) => {
   res.send('🟢 AI Receptionist is running.');
 });
 
-// 🧠 TwiML endpoint for Twilio call response
+// ✅ TwiML response that loops to keep the call active
 app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
   const response = `
     <Response>
@@ -34,69 +32,62 @@ app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
   res.send(response);
 });
 
-// 🎙️ WebSocket endpoint for Twilio <Stream>
-app.ws('/media', (ws, req) => {
+app.ws('/media', async (ws) => {
   console.log('🔊 WebSocket connected');
 
-  let dgStream = deepgram.listen.live({
+  const dgConnection = deepgram.listen.live({
     model: 'nova-2',
     language: 'en-US',
-    interim_results: false,
     smart_format: true,
-    vad_events: true
+    interim_results: false,
+    vad_events: true,
   });
 
-  dgStream.on('transcriptReceived', async (msg) => {
-    try {
-      const transcript = msg.channel.alternatives[0]?.transcript;
-      if (transcript) {
-        console.log('📝 Transcript:', transcript);
+  dgConnection.on('transcriptReceived', async (data) => {
+    const transcript = data.channel.alternatives[0]?.transcript;
+    if (transcript) {
+      console.log('📝 Transcription:', transcript);
 
-        const aiResp = await openai.chat.completions.create({
-          model: 'gpt-4',
-          messages: [
-            { role: 'system', content: 'You are a helpful IT support receptionist named Kate. Greet customers, ask questions to understand their issue, and confirm their business name.' },
-            { role: 'user', content: transcript }
-          ]
-        });
+      const aiResp = await openai.chat.completions.create({
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: 'You are a helpful IT support receptionist. Greet and ask smart follow-up questions.' },
+          { role: 'user', content: transcript }
+        ],
+      });
 
-        const reply = aiResp.choices[0].message.content;
-        console.log('🤖 AI:', reply);
+      const reply = aiResp.choices[0].message.content;
+      console.log('🤖 AI:', reply);
 
-        await axios.post(process.env.MAKE_WEBHOOK_URL, {
-          message: reply,
-          original: transcript
-        });
-      }
-    } catch (err) {
-      console.error('❌ Error in transcript processing:', err);
+      await axios.post(process.env.MAKE_WEBHOOK_URL, {
+        message: reply,
+        original: transcript
+      });
     }
   });
 
-  dgStream.on('error', (err) => {
-    console.error('❌ Deepgram stream error:', err);
-  });
+  dgConnection.on('error', console.error);
 
-  ws.on('message', (data) => {
-    const msg = JSON.parse(data);
-
-    if (msg.event === 'media') {
-      const audio = Buffer.from(msg.media.payload, 'base64');
-      dgStream.send(audio);
-    } else if (msg.event === 'stop') {
-      console.log('🛑 Call ended by Twilio');
-      dgStream.finish();
+  ws.on('message', (msg) => {
+    const data = JSON.parse(msg);
+    if (data.event === 'media') {
+      const audio = Buffer.from(data.media.payload, 'base64');
+      dgConnection.send(audio);
+    } else if (data.event === 'stop') {
+      console.log('🛑 Call ended');
+      dgConnection.finish();
       ws.close();
     }
   });
 
   ws.on('close', () => {
     console.log('🔌 WebSocket closed');
-    dgStream.finish();
+    dgConnection.finish();
   });
 });
 
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
 });
+
 
