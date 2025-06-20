@@ -17,7 +17,7 @@ app.get('/', (req, res) => {
   res.send('🟢 AI Receptionist is running.');
 });
 
-// ✅ Fix: Add Pause after greeting to avoid call ending
+// 🔁 TwiML endpoint for Twilio to get voice instructions
 app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
   const response = `
     <Response>
@@ -25,14 +25,15 @@ app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
         <Stream url="wss://${req.headers.host}/media" />
       </Start>
       <Say voice="Polly.Joanna">Hi, this is Kate from Vivid Smart. How may I help you today?</Say>
-      <Pause length="60"/>
+      <Pause length="60" />
     </Response>
   `;
   res.type('text/xml');
   res.send(response);
 });
 
-app.ws('/media', async (ws) => {
+// 🔊 Handle audio stream from Twilio via WebSocket
+app.ws('/media', async (ws, req) => {
   console.log('🔊 WebSocket connected from Twilio');
 
   const dgConnection = deepgram.listen.live({
@@ -40,34 +41,40 @@ app.ws('/media', async (ws) => {
     language: 'en-US',
     smart_format: true,
     interim_results: false,
-    vad_events: true
+    vad_events: true,
   });
 
-  dgConnection.on('open', () => {
-    console.log('🔗 Connected to Deepgram');
-  });
+  console.log('🔗 Connected to Deepgram');
 
   dgConnection.on('transcriptReceived', async (data) => {
     const transcript = data.channel.alternatives[0]?.transcript;
     if (transcript) {
       console.log('📝 Transcription:', transcript);
 
-      const aiResp = await openai.chat.completions.create({
-        model: 'gpt-4',
-        messages: [
-          { role: 'system', content: 'You are a helpful IT support receptionist. Greet the caller and ask smart follow-up questions based on what they say.' },
-          { role: 'user', content: transcript }
-        ]
-      });
+      try {
+        const aiResp = await openai.chat.completions.create({
+          model: 'gpt-4',
+          messages: [
+            {
+              role: 'system',
+              content:
+                'You are a helpful IT support receptionist. Greet and ask smart follow-up questions.',
+            },
+            { role: 'user', content: transcript },
+          ],
+        });
 
-      const reply = aiResp.choices[0].message.content;
-      console.log('🤖 AI:', reply);
+        const reply = aiResp.choices[0].message.content;
+        console.log('🤖 AI:', reply);
 
-      // Optional: send to Make.com
-      await axios.post(process.env.MAKE_WEBHOOK_URL, {
-        message: reply,
-        original: transcript
-      });
+        // 🔁 Send result to Make.com or any webhook
+        await axios.post(process.env.MAKE_WEBHOOK_URL, {
+          message: reply,
+          original: transcript,
+        });
+      } catch (err) {
+        console.error('❌ OpenAI or webhook error:', err.message);
+      }
     }
   });
 
