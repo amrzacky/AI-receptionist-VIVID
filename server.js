@@ -3,31 +3,47 @@ const express = require('express');
 const expressWs = require('express-ws');
 const WebSocket = require('ws');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 const { OpenAI } = require('openai');
-const textToSpeech = require('elevenlabs-node'); // npm install elevenlabs-node
+const { ElevenLabsClient } = require('elevenlabs-node');
 
 const app = express();
 expressWs(app);
 
 const port = process.env.PORT || 8080;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const eleven = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
+
+let latestReplyPath = ''; // Store path to latest audio file
+
+app.use(express.static('public')); // To serve audio files
 
 app.get('/', (req, res) => {
   res.send('🟢 AI Receptionist is running.');
 });
 
-app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
-  const response = `
+app.post('/twiml', express.text({ type: '*/*' }), async (req, res) => {
+  let twiml = `
     <Response>
       <Start>
         <Stream url="wss://${req.headers.host}/media" />
       </Start>
       <Say voice="Polly.Joanna">Hi, this is Kate from Vivid Smart. How may I help you today?</Say>
-      <Pause length="60"/>
     </Response>
   `;
+
+  // If there's a latestReplyPath, play it
+  if (latestReplyPath) {
+    twiml = `
+      <Response>
+        <Play>${latestReplyPath}</Play>
+      </Response>
+    `;
+  }
+
   res.type('text/xml');
-  res.send(response);
+  res.send(twiml);
 });
 
 app.ws('/media', (ws) => {
@@ -36,8 +52,7 @@ app.ws('/media', (ws) => {
   const dgSocket = new WebSocket(`wss://api.deepgram.com/v1/listen`, {
     headers: {
       Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`
-    },
-    protocols: ['token']
+    }
   });
 
   dgSocket.on('open', () => {
@@ -48,44 +63,34 @@ app.ws('/media', (ws) => {
       const transcript = data.channel?.alternatives[0]?.transcript;
 
       if (transcript) {
-        console.log('📝 Transcript:', transcript);
+        console.log('📝 Transcription:', transcript);
 
         const aiResp = await openai.chat.completions.create({
           model: 'gpt-4',
           messages: [
-            { role: 'system', content: 'You are a helpful, friendly IT support receptionist named Kate from Vivid Smart. Reply concisely and clearly to user questions and ask good follow-ups.' },
+            { role: 'system', content: 'You are a helpful IT support receptionist. Respond with short clear sentences suitable for phone calls.' },
             { role: 'user', content: transcript }
           ]
         });
 
         const reply = aiResp.choices[0].message.content;
-        console.log('🤖 AI Response:', reply);
+        console.log('🤖 AI:', reply);
 
-        // Send to Make.com if needed
-        await axios.post(process.env.MAKE_WEBHOOK_URL, {
-          message: reply,
-          original: transcript
-        });
-
-        // Convert reply to speech using ElevenLabs
-        const audioBuffer = await textToSpeech({
-          apiKey: process.env.ELEVENLABS_API_KEY,
-          voiceId: process.env.ELEVEN_VOICE_ID,
+        // Generate speech with ElevenLabs
+        const audio = await eleven.textToSpeech.convert({
+          voiceId: process.env.ELEVENLABS_VOICE_ID, // Add this to .env
           text: reply,
           modelId: 'eleven_monolingual_v1',
-          stability: 0.5,
-          similarityBoost: 0.75
+          outputFormat: 'mp3_44100_128'
         });
 
-        // Send the audio to Twilio as base64-encoded audio (simulate speaking)
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            event: 'media',
-            media: {
-              payload: audioBuffer.toString('base64')
-            }
-          }));
-        }
+        const filename = `speech-${Date.now()}.mp3`;
+        const filePath = path.join(__dirname, 'public', filename);
+        latestReplyPath = `https://${process.env.HEROKU_APP_NAME}.herokuapp.com/${filename}`;
+
+        fs.writeFileSync(filePath, Buffer.from(audio));
+
+        console.log('🔊 Reply audio saved and ready to play.');
       }
     });
   });
@@ -116,3 +121,4 @@ app.ws('/media', (ws) => {
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
 });
+
