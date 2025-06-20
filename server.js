@@ -1,9 +1,9 @@
 require('dotenv').config();
 const express = require('express');
 const expressWs = require('express-ws');
-const { createClient } = require('@deepgram/sdk');
-const { OpenAI } = require('openai');
+const { createClient } = require('@deepgram/sdk'); // Deepgram v3
 const axios = require('axios');
+const { OpenAI } = require('openai');
 
 const app = express();
 expressWs(app);
@@ -13,11 +13,12 @@ const port = process.env.PORT || 8080;
 const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// Health check
 app.get('/', (req, res) => {
   res.send('🟢 AI Receptionist is running.');
 });
 
-// ✅ Twilio TwiML endpoint
+// Twilio TwiML for call start
 app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
   const response = `
     <Response>
@@ -25,18 +26,17 @@ app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
         <Stream url="wss://${req.headers.host}/media" />
       </Start>
       <Say voice="Polly.Joanna">Hi, this is Kate from Vivid Smart. How may I help you today?</Say>
-      <Pause length="60" />
     </Response>
   `;
   res.type('text/xml');
   res.send(response);
 });
 
-// ✅ WebSocket endpoint for Twilio Media Stream
+// Handle live audio from Twilio
 app.ws('/media', async (ws) => {
   console.log('🔊 WebSocket connected');
 
-  const dgConnection = await deepgram.listen.live.v("1").transcribe({
+  const dgConnection = deepgram.listen.live({
     model: 'nova-2',
     language: 'en-US',
     smart_format: true,
@@ -52,24 +52,18 @@ app.ws('/media', async (ws) => {
       const aiResp = await openai.chat.completions.create({
         model: 'gpt-4',
         messages: [
-          {
-            role: 'system',
-            content: 'You are a helpful IT support receptionist. Greet the caller and ask smart follow-up questions based on the issue.',
-          },
-          {
-            role: 'user',
-            content: transcript,
-          },
+          { role: 'system', content: 'You are a helpful IT support receptionist. Greet and ask smart follow-up questions.' },
+          { role: 'user', content: transcript }
         ],
       });
 
       const reply = aiResp.choices[0].message.content;
       console.log('🤖 AI:', reply);
 
-      // Send transcription + AI reply to Make.com
+      // Send both transcript and reply to Make.com
       await axios.post(process.env.MAKE_WEBHOOK_URL, {
         message: reply,
-        original: transcript,
+        original: transcript
       });
     }
   });
