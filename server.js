@@ -4,6 +4,7 @@ const expressWs = require('express-ws');
 const WebSocket = require('ws');
 const axios = require('axios');
 const { OpenAI } = require('openai');
+const textToSpeech = require('elevenlabs-node'); // npm install elevenlabs-node
 
 const app = express();
 expressWs(app);
@@ -22,6 +23,7 @@ app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
         <Stream url="wss://${req.headers.host}/media" />
       </Start>
       <Say voice="Polly.Joanna">Hi, this is Kate from Vivid Smart. How may I help you today?</Say>
+      <Pause length="60"/>
     </Response>
   `;
   res.type('text/xml');
@@ -34,7 +36,8 @@ app.ws('/media', (ws) => {
   const dgSocket = new WebSocket(`wss://api.deepgram.com/v1/listen`, {
     headers: {
       Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`
-    }
+    },
+    protocols: ['token']
   });
 
   dgSocket.on('open', () => {
@@ -45,54 +48,51 @@ app.ws('/media', (ws) => {
       const transcript = data.channel?.alternatives[0]?.transcript;
 
       if (transcript) {
-        console.log('📝 Transcription:', transcript);
+        console.log('📝 Transcript:', transcript);
 
         const aiResp = await openai.chat.completions.create({
           model: 'gpt-4',
           messages: [
-            { role: 'system', content: 'You are a helpful IT support receptionist. Greet and ask smart follow-up questions.' },
+            { role: 'system', content: 'You are a helpful, friendly IT support receptionist named Kate from Vivid Smart. Reply concisely and clearly to user questions and ask good follow-ups.' },
             { role: 'user', content: transcript }
-          ],
+          ]
         });
 
         const reply = aiResp.choices[0].message.content;
-        console.log('🤖 AI:', reply);
+        console.log('🤖 AI Response:', reply);
 
-        // Send to ElevenLabs for voice synthesis
-        const audioResp = await axios.post(
-          `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`,
-          {
-            text: reply,
-            model_id: "eleven_multilingual_v2",
-            voice_settings: { stability: 0.4, similarity_boost: 0.8 },
-          },
-          {
-            headers: {
-              "xi-api-key": process.env.ELEVENLABS_API_KEY,
-              "Content-Type": "application/json",
-              "Accept": "audio/mpeg",
-            },
-            responseType: 'arraybuffer',
-          }
-        );
-
-        const audioBase64 = Buffer.from(audioResp.data).toString('base64');
-
-        ws.send(JSON.stringify({
-          event: 'media',
-          media: { payload: audioBase64 }
-        }));
-
+        // Send to Make.com if needed
         await axios.post(process.env.MAKE_WEBHOOK_URL, {
           message: reply,
           original: transcript
         });
+
+        // Convert reply to speech using ElevenLabs
+        const audioBuffer = await textToSpeech({
+          apiKey: process.env.ELEVENLABS_API_KEY,
+          voiceId: process.env.ELEVEN_VOICE_ID,
+          text: reply,
+          modelId: 'eleven_monolingual_v1',
+          stability: 0.5,
+          similarityBoost: 0.75
+        });
+
+        // Send the audio to Twilio as base64-encoded audio (simulate speaking)
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            event: 'media',
+            media: {
+              payload: audioBuffer.toString('base64')
+            }
+          }));
+        }
       }
     });
   });
 
   ws.on('message', (msg) => {
     const data = JSON.parse(msg);
+
     if (data.event === 'media') {
       const audio = Buffer.from(data.media.payload, 'base64');
       if (dgSocket.readyState === WebSocket.OPEN) {
@@ -116,7 +116,3 @@ app.ws('/media', (ws) => {
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
 });
-
-
-
-
