@@ -9,16 +9,13 @@ const app = express();
 expressWs(app);
 
 const port = process.env.PORT || 8080;
-
 const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Health check
 app.get('/', (req, res) => {
   res.send('🟢 AI Receptionist is running.');
 });
 
-// Twilio TwiML for call start
 app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
   const response = `
     <Response>
@@ -32,7 +29,6 @@ app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
   res.send(response);
 });
 
-// Handle live audio from Twilio
 app.ws('/media', async (ws) => {
   console.log('🔊 WebSocket connected');
 
@@ -42,6 +38,7 @@ app.ws('/media', async (ws) => {
     smart_format: true,
     interim_results: false,
     vad_events: true,
+    protocols: [] // ✅ Required for Node v20+ to avoid WebSocket crash
   });
 
   dgConnection.on('transcriptReceived', async (data) => {
@@ -52,15 +49,17 @@ app.ws('/media', async (ws) => {
       const aiResp = await openai.chat.completions.create({
         model: 'gpt-4',
         messages: [
-          { role: 'system', content: 'You are a helpful IT support receptionist. Greet and ask smart follow-up questions.' },
+          {
+            role: 'system',
+            content: 'You are a helpful IT support receptionist. Greet and ask smart follow-up questions.'
+          },
           { role: 'user', content: transcript }
-        ],
+        ]
       });
 
       const reply = aiResp.choices[0].message.content;
       console.log('🤖 AI:', reply);
 
-      // Send both transcript and reply to Make.com
       await axios.post(process.env.MAKE_WEBHOOK_URL, {
         message: reply,
         original: transcript
