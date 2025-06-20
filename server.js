@@ -21,9 +21,7 @@ app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
       <Start>
         <Stream url="wss://${req.headers.host}/media" />
       </Start>
-      <Pause length="5"/>
       <Say voice="Polly.Joanna">Hi, this is Kate from Vivid Smart. How may I help you today?</Say>
-      <Pause length="60"/>
     </Response>
   `;
   res.type('text/xml');
@@ -33,11 +31,14 @@ app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
 app.ws('/media', (ws) => {
   console.log('🔊 WebSocket connected from Twilio');
 
-  const dgSocket = new WebSocket(`wss://api.deepgram.com/v1/listen`, {
-    headers: {
-      Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`
+  const dgSocket = new WebSocket(
+    `wss://api.deepgram.com/v1/listen?encoding=mulaw&sample_rate=8000&channels=1`,
+    {
+      headers: {
+        Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`
+      }
     }
-  });
+  );
 
   dgSocket.on('open', () => {
     console.log('🔗 Connected to Deepgram');
