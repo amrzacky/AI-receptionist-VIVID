@@ -31,14 +31,11 @@ app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
 app.ws('/media', (ws) => {
   console.log('🔊 WebSocket connected from Twilio');
 
-  const dgSocket = new WebSocket(
-    `wss://api.deepgram.com/v1/listen?encoding=mulaw&sample_rate=8000&channels=1`,
-    {
-      headers: {
-        Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`
-      }
+  const dgSocket = new WebSocket(`wss://api.deepgram.com/v1/listen`, {
+    headers: {
+      Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`
     }
-  );
+  });
 
   dgSocket.on('open', () => {
     console.log('🔗 Connected to Deepgram');
@@ -61,6 +58,31 @@ app.ws('/media', (ws) => {
         const reply = aiResp.choices[0].message.content;
         console.log('🤖 AI:', reply);
 
+        // Send to ElevenLabs for voice synthesis
+        const audioResp = await axios.post(
+          `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`,
+          {
+            text: reply,
+            model_id: "eleven_multilingual_v2",
+            voice_settings: { stability: 0.4, similarity_boost: 0.8 },
+          },
+          {
+            headers: {
+              "xi-api-key": process.env.ELEVENLABS_API_KEY,
+              "Content-Type": "application/json",
+              "Accept": "audio/mpeg",
+            },
+            responseType: 'arraybuffer',
+          }
+        );
+
+        const audioBase64 = Buffer.from(audioResp.data).toString('base64');
+
+        ws.send(JSON.stringify({
+          event: 'media',
+          media: { payload: audioBase64 }
+        }));
+
         await axios.post(process.env.MAKE_WEBHOOK_URL, {
           message: reply,
           original: transcript
@@ -71,7 +93,6 @@ app.ws('/media', (ws) => {
 
   ws.on('message', (msg) => {
     const data = JSON.parse(msg);
-
     if (data.event === 'media') {
       const audio = Buffer.from(data.media.payload, 'base64');
       if (dgSocket.readyState === WebSocket.OPEN) {
