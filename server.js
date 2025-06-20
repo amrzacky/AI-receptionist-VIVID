@@ -6,9 +6,12 @@ const { OpenAI } = require('openai');
 const axios = require('axios');
 const twilio = require('twilio');
 const WebSocket = require('ws');
+const expressWs = require('express-ws');
 
 const app = express();
-const port = process.env.PORT || 3000;
+expressWs(app); // Enable WebSocket support on Express
+
+const port = process.env.PORT || 8080;
 
 // Initialize APIs
 const deepgram = new Deepgram(process.env.DEEPGRAM_API_KEY);
@@ -18,16 +21,15 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 app.get('/', (req, res) => {
-  res.send('✅ AI Receptionist is running.');
+  res.send('✅ AI Receptionist is up and running.');
 });
 
-// Twilio sends call here to start streaming audio
+// Handle Twilio call with greeting and stream setup
 app.post('/twiml', (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
 
   twiml.say('Hello! This is Kate from Zyvai Tech. How may I help you today?', { voice: 'Polly.Joanna' });
 
-  // Stream call audio to our WebSocket
   twiml.start().stream({
     url: `wss://${req.headers.host}/media`
   });
@@ -36,24 +38,25 @@ app.post('/twiml', (req, res) => {
   res.send(twiml.toString());
 });
 
-// Handle incoming audio WebSocket stream from Twilio
-app.ws('/media', (ws, req) => {
-  console.log('🔊 Incoming Twilio Media Stream');
+// WebSocket endpoint to receive media stream from Twilio
+app.ws('/media', (ws) => {
+  console.log('🎧 Media stream connected');
 
   const dgSocket = deepgram.transcription.live({
-    punctuate: true,
-    language: 'en-US'
+    model: 'nova',
+    language: 'en-US',
+    smart_format: true,
+    interim_results: false
   });
 
   dgSocket.on('open', () => {
     console.log('🔗 Connected to Deepgram');
 
-    ws.on('message', (data) => {
-      const msg = JSON.parse(data);
-
-      if (msg.event === 'media') {
-        const audio = Buffer.from(msg.media.payload, 'base64');
-        dgSocket.send(audio);
+    ws.on('message', (msg) => {
+      const data = JSON.parse(msg);
+      if (data.event === 'media') {
+        const audioBuffer = Buffer.from(data.media.payload, 'base64');
+        dgSocket.send(audioBuffer);
       }
     });
 
@@ -63,33 +66,34 @@ app.ws('/media', (ws, req) => {
     });
   });
 
-  dgSocket.on('transcriptReceived', async (transcription) => {
-    const transcript = transcription.channel?.alternatives[0]?.transcript;
-    if (!transcript || transcript.length === 0) return;
+  dgSocket.on('transcriptReceived', async (data) => {
+    const transcript = data.channel?.alternatives[0]?.transcript;
+    if (!transcript || transcript.trim() === '') return;
 
     console.log('📝 Transcript:', transcript);
 
     try {
-      // Send to OpenAI
-      const aiResp = await openai.chat.completions.create({
+      const completion = await openai.chat.completions.create({
         model: 'gpt-4',
         messages: [
-          { role: 'system', content: 'You are Kate, an AI receptionist for Zyvai Tech. Answer helpfully and ask for business name after issue.' },
+          {
+            role: 'system',
+            content: 'You are Kate, an AI receptionist for Zyvai Tech. Ask smart questions based on what the caller says. Be polite and helpful.'
+          },
           { role: 'user', content: transcript }
         ]
       });
 
-      const replyText = aiResp.choices[0].message.content.trim();
-      console.log('🤖 AI:', replyText);
+      const aiResponse = completion.choices[0].message.content;
+      console.log('🤖 AI:', aiResponse);
 
-      // Convert text to voice using ElevenLabs
-      const audioResp = await axios.post(
-        `https://api.elevenlabs.io/v1/text-to-speech/YOUR_VOICE_ID/stream`,
+      const elevenResponse = await axios.post(
+        `https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL/stream`,
         {
-          text: replyText,
+          text: aiResponse,
           voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75
+            stability: 0.4,
+            similarity_boost: 0.85
           }
         },
         {
@@ -101,10 +105,11 @@ app.ws('/media', (ws, req) => {
         }
       );
 
-      // TODO: Play audioResp.data back to Twilio (not yet supported via WebSocket directly)
+      console.log('🔊 Voice generated (ElevenLabs).');
+      // You would stream this audio back to Twilio here if supported
 
     } catch (err) {
-      console.error('❌ Error handling transcript:', err.message);
+      console.error('❌ Error:', err.message);
     }
   });
 
@@ -113,8 +118,7 @@ app.ws('/media', (ws, req) => {
   });
 });
 
-// Start server
+// Start the server
 app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
+  console.log(`🚀 Server listening on port ${port}`);
 });
-
