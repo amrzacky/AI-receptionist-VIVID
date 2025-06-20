@@ -1,93 +1,98 @@
 require('dotenv').config();
 const express = require('express');
 const expressWs = require('express-ws');
-const { createClient } = require('@deepgram/sdk');
+const WebSocket = require('ws');
+const axios = require('axios');
 const { OpenAI } = require('openai');
-const { twiml: { VoiceResponse } } = require('twilio');
 
 const app = express();
 expressWs(app);
 
-const PORT = process.env.PORT || 3000;
-const BASE_URL = process.env.BASE_URL; // e.g., https://yourapp.herokuapp.com
-
-// Clients
-const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
+const port = process.env.PORT || 8080;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Home
 app.get('/', (req, res) => {
-  res.send('✅ AI Receptionist is live!');
+  res.send('🟢 AI Receptionist is running.');
 });
 
-// Twilio XML response
-app.post('/twiml', (req, res) => {
-  const response = new VoiceResponse();
-
-  const connect = response.connect();
-  connect.stream({
-    url: `${BASE_URL}/media`,
-    track: 'inbound_track'
-  });
-
-  response.say('Hello, thank you for calling Vivid Smart Security. How may I help you today?');
+app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
+  const response = `
+    <Response>
+      <Start>
+        <Stream url="wss://${req.headers.host}/media" />
+      </Start>
+      <Pause length="5"/>
+      <Say voice="Polly.Joanna">Hi, this is Kate from Vivid Smart. How may I help you today?</Say>
+      <Pause length="60"/>
+    </Response>
+  `;
   res.type('text/xml');
-  res.send(response.toString());
+  res.send(response);
 });
 
-// Twilio Media WebSocket
-app.ws('/media', async (ws, req) => {
+app.ws('/media', (ws) => {
   console.log('🔊 WebSocket connected from Twilio');
 
-  const deepgramLive = await deepgram.listen.live({
-    model: 'nova',
-    smart_format: true,
-    punctuate: true
-  });
-
-  deepgramLive.on('transcriptReceived', async (data) => {
-    const transcript = data.channel?.alternatives[0]?.transcript;
-    if (transcript && transcript.length > 0) {
-      console.log('📄 Transcript:', transcript);
-      // OPTIONAL: You can forward this to OpenAI or use it however needed
+  const dgSocket = new WebSocket(`wss://api.deepgram.com/v1/listen`, {
+    headers: {
+      Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`
     }
   });
 
-  deepgramLive.on('error', (err) => {
-    console.error('❌ Deepgram Error:', err);
-  });
+  dgSocket.on('open', () => {
+    console.log('🔗 Connected to Deepgram');
 
-  deepgramLive.on('close', () => {
-    console.log('🔌 Deepgram connection closed');
+    dgSocket.on('message', async (message) => {
+      const data = JSON.parse(message);
+      const transcript = data.channel?.alternatives[0]?.transcript;
+
+      if (transcript) {
+        console.log('📝 Transcription:', transcript);
+
+        const aiResp = await openai.chat.completions.create({
+          model: 'gpt-4',
+          messages: [
+            { role: 'system', content: 'You are a helpful IT support receptionist. Greet and ask smart follow-up questions.' },
+            { role: 'user', content: transcript }
+          ],
+        });
+
+        const reply = aiResp.choices[0].message.content;
+        console.log('🤖 AI:', reply);
+
+        await axios.post(process.env.MAKE_WEBHOOK_URL, {
+          message: reply,
+          original: transcript
+        });
+      }
+    });
   });
 
   ws.on('message', (msg) => {
-    try {
-      const data = JSON.parse(msg);
+    const data = JSON.parse(msg);
 
-      if (data.event === 'start') {
-        console.log('🔁 Start event received');
-      } else if (data.event === 'media') {
-        const audio = Buffer.from(data.media.payload, 'base64');
-        deepgramLive.send(audio);
-      } else if (data.event === 'stop') {
-        console.log('🛑 Call ended by Twilio');
-        deepgramLive.finish();
+    if (data.event === 'media') {
+      const audio = Buffer.from(data.media.payload, 'base64');
+      if (dgSocket.readyState === WebSocket.OPEN) {
+        dgSocket.send(audio);
       }
-    } catch (err) {
-      console.error('⚠️ Error parsing WebSocket message:', err);
+    } else if (data.event === 'stop') {
+      console.log('🛑 Call ended by Twilio');
+      dgSocket.close();
+      ws.close();
     }
   });
 
   ws.on('close', () => {
     console.log('🔌 Twilio WebSocket closed');
-    deepgramLive.finish();
+    if (dgSocket.readyState === WebSocket.OPEN) {
+      dgSocket.close();
+    }
   });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+app.listen(port, () => {
+  console.log(`🚀 Server running on port ${port}`);
 });
 
 
