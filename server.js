@@ -1,18 +1,16 @@
 require('dotenv').config();
 const express = require('express');
 const expressWs = require('express-ws');
-const { Deepgram } = require('@deepgram/sdk');
+const { createClient } = require('@deepgram/sdk'); // v3 format
 const axios = require('axios');
 const { OpenAI } = require('openai');
-const { Readable } = require('stream');
 
 const app = express();
 expressWs(app);
 
-const deepgram = new Deepgram(process.env.DEEPGRAM_API_KEY);
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 const port = process.env.PORT || 8080;
+const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 app.get('/', (req, res) => {
   res.send('🟢 AI Receptionist is running.');
@@ -31,26 +29,26 @@ app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
   res.send(response);
 });
 
-app.ws('/media', async (ws, req) => {
+app.ws('/media', async (ws) => {
   console.log('🔊 WebSocket connected');
 
-  const deepgramLive = await deepgram.listen.live({
+  const dgConnection = deepgram.listen.live({
     model: 'nova-2',
     language: 'en-US',
-    interim_results: false,
     smart_format: true,
-    vad_events: true
+    interim_results: false,
+    vad_events: true,
   });
 
-  deepgramLive.on('transcriptReceived', async (msg) => {
-    const transcript = msg.channel.alternatives[0]?.transcript;
+  dgConnection.on('transcriptReceived', async (data) => {
+    const transcript = data.channel.alternatives[0]?.transcript;
     if (transcript) {
       console.log('📝 Transcription:', transcript);
 
       const aiResp = await openai.chat.completions.create({
         model: 'gpt-4',
         messages: [
-          { role: 'system', content: 'You are a friendly IT support receptionist. Greet and ask helpful follow-up questions.' },
+          { role: 'system', content: 'You are a helpful IT support receptionist. Greet and ask smart follow-up questions.' },
           { role: 'user', content: transcript }
         ],
       });
@@ -65,30 +63,27 @@ app.ws('/media', async (ws, req) => {
     }
   });
 
-  deepgramLive.on('error', console.error);
+  dgConnection.on('error', console.error);
 
-  ws.on('message', async (data) => {
-    const msg = JSON.parse(data);
-
-    if (msg.event === 'media') {
-      const audio = Buffer.from(msg.media.payload, 'base64');
-      const audioStream = Readable.from(audio);
-      audioStream.pipe(deepgramLive);
-    }
-
-    if (msg.event === 'stop') {
+  ws.on('message', (msg) => {
+    const data = JSON.parse(msg);
+    if (data.event === 'media') {
+      const audio = Buffer.from(data.media.payload, 'base64');
+      dgConnection.send(audio);
+    } else if (data.event === 'stop') {
       console.log('🛑 Call ended');
-      deepgramLive.finish();
+      dgConnection.finish();
       ws.close();
     }
   });
 
   ws.on('close', () => {
-    console.log('🔌 WebSocket disconnected');
-    deepgramLive.finish();
+    console.log('🔌 WebSocket closed');
+    dgConnection.finish();
   });
 });
 
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
 });
+
