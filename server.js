@@ -1,42 +1,20 @@
-require('dotenv').config();
 const express = require('express');
 const expressWs = require('express-ws');
-const { createClient } = require('@deepgram/sdk');
-const axios = require('axios');
-const { OpenAI } = require('openai');
+const { Deepgram } = require('@deepgram/sdk');
+const { MessagingResponse, VoiceResponse } = require('twilio').twiml;
+require('dotenv').config();
 
 const app = express();
 expressWs(app);
 
-const port = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
+const deepgram = new Deepgram(process.env.DEEPGRAM_API_KEY);
 
-const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-app.get('/', (req, res) => {
-  res.send('🟢 AI Receptionist is running.');
-});
-
-// 🔁 TwiML endpoint for Twilio to get voice instructions
-app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
-  const response = `
-    <Response>
-      <Start>
-        <Stream url="wss://${req.headers.host}/media" />
-      </Start>
-      <Say voice="Polly.Joanna">Hi, this is Kate from Vivid Smart. How may I help you today?</Say>
-      <Pause length="60" />
-    </Response>
-  `;
-  res.type('text/xml');
-  res.send(response);
-});
-
-// 🔊 Handle audio stream from Twilio via WebSocket
+// 🔊 WebSocket handler for Twilio <Stream>
 app.ws('/media', async (ws, req) => {
   console.log('🔊 WebSocket connected from Twilio');
 
-  const dgConnection = deepgram.listen.live({
+  const dgConnection = await deepgram.transcription.live({
     model: 'nova-2',
     language: 'en-US',
     smart_format: true,
@@ -46,51 +24,28 @@ app.ws('/media', async (ws, req) => {
 
   console.log('🔗 Connected to Deepgram');
 
-  dgConnection.on('transcriptReceived', async (data) => {
-    const transcript = data.channel.alternatives[0]?.transcript;
-    if (transcript) {
-      console.log('📝 Transcription:', transcript);
-
-      try {
-        const aiResp = await openai.chat.completions.create({
-          model: 'gpt-4',
-          messages: [
-            {
-              role: 'system',
-              content:
-                'You are a helpful IT support receptionist. Greet and ask smart follow-up questions.',
-            },
-            { role: 'user', content: transcript },
-          ],
-        });
-
-        const reply = aiResp.choices[0].message.content;
-        console.log('🤖 AI:', reply);
-
-        // 🔁 Send result to Make.com or any webhook
-        await axios.post(process.env.MAKE_WEBHOOK_URL, {
-          message: reply,
-          original: transcript,
-        });
-      } catch (err) {
-        console.error('❌ OpenAI or webhook error:', err.message);
-      }
+  dgConnection.on('transcriptReceived', (data) => {
+    const transcript = JSON.parse(data);
+    if (
+      transcript.channel &&
+      transcript.channel.alternatives &&
+      transcript.channel.alternatives[0].transcript
+    ) {
+      console.log('📝 Transcript:', transcript.channel.alternatives[0].transcript);
     }
   });
 
-  dgConnection.on('error', (err) => {
-    console.error('❌ Deepgram error:', err);
-  });
-
   ws.on('message', (msg) => {
-    const data = JSON.parse(msg);
-    if (data.event === 'media') {
-      const audio = Buffer.from(data.media.payload, 'base64');
-      dgConnection.send(audio);
-    } else if (data.event === 'stop') {
+    const message = JSON.parse(msg);
+
+    if (message.event === 'start') {
+      console.log('📞 Call started');
+    } else if (message.event === 'media') {
+      const media = Buffer.from(message.media.payload, 'base64');
+      dgConnection.send(media);
+    } else if (message.event === 'stop') {
       console.log('🛑 Call ended by Twilio');
       dgConnection.finish();
-      ws.close();
     }
   });
 
@@ -100,8 +55,29 @@ app.ws('/media', async (ws, req) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
+// 📞 TwiML response for incoming calls
+app.post('/twiml', (req, res) => {
+  const twiml = new VoiceResponse();
+
+  twiml.say('Hello, this is Kate from Vivid Smart. How may I help you today?');
+
+  twiml.connect().stream({
+    url: `${process.env.BASE_URL}/media`,
+    track: 'inbound_track',
+    name: 'kate-stream',
+  });
+
+  res.type('text/xml');
+  res.send(twiml.toString());
+});
+
+// ✅ Health check
+app.get('/', (req, res) => {
+  res.send('AI Receptionist is running!');
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
 
 
