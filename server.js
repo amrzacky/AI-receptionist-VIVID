@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const expressWs = require('express-ws');
-const { createClient } = require('@deepgram/sdk'); // Deepgram v3
+const { createClient } = require('@deepgram/sdk');
 const axios = require('axios');
 const { OpenAI } = require('openai');
 
@@ -38,7 +38,6 @@ app.ws('/media', async (ws) => {
     smart_format: true,
     interim_results: false,
     vad_events: true,
-    protocols: [] // ✅ Required for Node v20+ to avoid WebSocket crash
   });
 
   dgConnection.on('transcriptReceived', async (data) => {
@@ -46,38 +45,50 @@ app.ws('/media', async (ws) => {
     if (transcript) {
       console.log('📝 Transcription:', transcript);
 
-      const aiResp = await openai.chat.completions.create({
-        model: 'gpt-4',
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a helpful IT support receptionist. Greet and ask smart follow-up questions.'
-          },
-          { role: 'user', content: transcript }
-        ]
-      });
+      try {
+        const aiResp = await openai.chat.completions.create({
+          model: 'gpt-4',
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a helpful IT support receptionist. Greet and ask smart follow-up questions.'
+            },
+            { role: 'user', content: transcript }
+          ]
+        });
 
-      const reply = aiResp.choices[0].message.content;
-      console.log('🤖 AI:', reply);
+        const reply = aiResp.choices[0].message.content;
+        console.log('🤖 AI:', reply);
 
-      await axios.post(process.env.MAKE_WEBHOOK_URL, {
-        message: reply,
-        original: transcript
-      });
+        // Send to Make.com webhook
+        await axios.post(process.env.MAKE_WEBHOOK_URL, {
+          message: reply,
+          original: transcript
+        });
+
+      } catch (err) {
+        console.error('❌ Error in OpenAI or Make webhook:', err);
+      }
     }
   });
 
-  dgConnection.on('error', console.error);
+  dgConnection.on('error', (err) => {
+    console.error('💥 Deepgram connection error:', err);
+  });
 
   ws.on('message', (msg) => {
-    const data = JSON.parse(msg);
-    if (data.event === 'media') {
-      const audio = Buffer.from(data.media.payload, 'base64');
-      dgConnection.send(audio);
-    } else if (data.event === 'stop') {
-      console.log('🛑 Call ended');
-      dgConnection.finish();
-      ws.close();
+    try {
+      const data = JSON.parse(msg);
+      if (data.event === 'media') {
+        const audio = Buffer.from(data.media.payload, 'base64');
+        dgConnection.send(audio);
+      } else if (data.event === 'stop') {
+        console.log('🛑 Call ended');
+        dgConnection.finish();
+        ws.close();
+      }
+    } catch (err) {
+      console.error('⚠️ WebSocket message error:', err);
     }
   });
 
