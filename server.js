@@ -27,7 +27,7 @@ app.post('/twiml', express.text({ type: '*/*' }), (req, res) => {
         <Stream url="wss://${req.headers.host}/media" />
       </Start>
       <Say voice="Polly.Joanna">Hi, this is Kate from Vivid Smart. How may I help you today?</Say>
-      ${latestReplyPath ? `<Play>${latestReplyPath}</Play>` : ''}
+      <Pause length="60"/>
     </Response>
   `;
   res.type('text/xml');
@@ -114,4 +114,3 @@ app.ws('/media', (ws) => {
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
 });
-
